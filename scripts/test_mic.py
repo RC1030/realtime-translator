@@ -13,12 +13,14 @@ import sounddevice as sd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from audio_listener import _pick_input_device, _resample_for_whisper
+from audio_listener import _resample_for_whisper
+from bluetooth_audio import describe_input_choice, pick_input_device
 
 
 def main() -> int:
-    device, rate = _pick_input_device()
-    name = sd.query_devices(device)["name"] if device is not None else "default"
+    device = pick_input_device(prefer_bluetooth=False)
+    name = device.name
+    rate = device.sample_rate
     print(f"Device: {name}")
     print(f"Rate: {rate} Hz")
     print("Speak for 3 seconds...")
@@ -36,7 +38,7 @@ def main() -> int:
         channels=1,
         dtype="float32",
         blocksize=chunk,
-        device=device,
+        device=device.index,
         callback=callback,
     ):
         time.sleep(3)

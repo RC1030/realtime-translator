@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -12,6 +13,7 @@ from tkinter import messagebox, ttk
 import numpy as np
 
 from audio_listener import AudioListener
+from bluetooth_audio import get_bluetooth_input_candidates, pick_input_device
 from config import (
     DEFAULT_SOURCE,
     DEFAULT_TARGET,
@@ -33,13 +35,8 @@ class TranslatorApp:
 
         self.event_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.stt = SpeechToText()
-        self.listener = AudioListener(
-            on_utterance=self._on_utterance_captured,
-            on_status=lambda msg: self.event_queue.put(("status", msg)),
-            on_level=lambda level: self.event_queue.put(("level", level)),
-            on_speech_start=lambda: self.event_queue.put(("speech_start", None)),
-            on_progress=lambda audio: self.event_queue.put(("partial", audio.copy())),
-        )
+        self.listener: AudioListener | None = None
+        self.prefer_bluetooth = False
 
         self.models_ready = False
         self.transcribing = False
@@ -57,6 +54,55 @@ class TranslatorApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_events)
         threading.Thread(target=self._preload_models, daemon=True, name="model-preload").start()
+        self.root.after(0, self._prompt_audio_source)
+
+    def _make_listener(self) -> AudioListener:
+        return AudioListener(
+            on_utterance=self._on_utterance_captured,
+            on_status=lambda msg: self.event_queue.put(("status", msg)),
+            on_level=lambda level: self.event_queue.put(("level", level)),
+            on_speech_start=lambda: self.event_queue.put(("speech_start", None)),
+            on_progress=lambda audio: self.event_queue.put(("partial", audio.copy())),
+            prefer_bluetooth=self.prefer_bluetooth,
+        )
+
+    def _prompt_audio_source(self) -> None:
+        env_pref = os.getenv("PREFER_BLUETOOTH", "").strip().lower()
+        if env_pref in {"1", "yes", "true"}:
+            self.prefer_bluetooth = True
+            self._start_listener()
+            return
+        if env_pref in {"0", "no", "false"}:
+            self.prefer_bluetooth = False
+            self._start_listener()
+            return
+
+        candidates = get_bluetooth_input_candidates()
+        if not candidates:
+            self.prefer_bluetooth = False
+            self._start_listener()
+            return
+
+        device_names = ", ".join(candidate["bluetooth_name"] for candidate in candidates)
+        use_bluetooth = messagebox.askyesno(
+            "Bluetooth Audio Detected",
+            (
+                f"Bluetooth audio device detected:\n{device_names}\n\n"
+                "Use this device as voice input?\n\n"
+                "Yes: listen through the Bluetooth microphone\n"
+                "No: keep using the Mac built-in microphone"
+            ),
+        )
+        self.prefer_bluetooth = use_bluetooth
+        self._start_listener()
+
+    def _start_listener(self) -> None:
+        if self.listener is not None:
+            self.listener.stop()
+        self.listener = self._make_listener()
+        choice = pick_input_device(prefer_bluetooth=self.prefer_bluetooth)
+        source_label = "Bluetooth" if choice.source == "bluetooth" else "Built-in"
+        self.status_var.set(f"Starting {source_label} microphone...")
         self.listener.start()
 
     def _preload_models(self) -> None:
@@ -218,7 +264,8 @@ class TranslatorApp:
         self._clear_translation()
         self.continue_btn.configure(state="disabled")
         self.status_var.set("Listening...")
-        self.listener.resume()
+        if self.listener is not None:
+            self.listener.resume()
 
     def _on_speech_start(self) -> None:
         if self.awaiting_next:
@@ -251,10 +298,11 @@ class TranslatorApp:
             self._partial_busy = False
 
     def _begin_final_transcription(self, audio: np.ndarray) -> None:
-        if self.transcribing or not self.models_ready:
+        if self.transcribing or not self.models_ready or self.listener is None:
             return
         self.transcribing = True
-        self.listener.pause()
+        if self.listener is not None:
+            self.listener.pause()
         threading.Thread(
             target=self._transcribe_final,
             args=(audio,),
@@ -375,7 +423,8 @@ class TranslatorApp:
         self.root.after(100, self._poll_events)
 
     def _on_close(self) -> None:
-        self.listener.stop()
+        if self.listener is not None:
+            self.listener.stop()
         self.root.destroy()
 
 

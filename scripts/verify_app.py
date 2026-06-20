@@ -73,6 +73,15 @@ def main() -> int:
     print(f"   TranslatorApp: {app_module.TranslatorApp}")
     print("   PASS")
 
+    print("\n5) Bluetooth audio detection module")
+    from bluetooth_audio import get_bluetooth_input_candidates, pick_input_device
+
+    candidates = get_bluetooth_input_candidates()
+    builtin = pick_input_device(prefer_bluetooth=False)
+    print(f"   Bluetooth candidates: {len(candidates)}")
+    print(f"   Built-in selection: {builtin.name} ({builtin.source})")
+    print("   PASS")
+
     print("\nAll automated checks passed.")
     print("Manual GUI test: speak, wait 2s silence, click Continue.")
     return 0

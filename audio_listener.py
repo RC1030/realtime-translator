@@ -9,10 +9,10 @@ from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 
+from bluetooth_audio import InputDeviceChoice, describe_input_choice, pick_input_device
 from config import (
     CALIBRATION_SECONDS,
     CHUNK_SECONDS,
-    INPUT_DEVICE,
     MIN_RMS_THRESHOLD,
     MIN_SPEECH_SECONDS,
     NOISE_MULTIPLIER,
@@ -20,32 +20,6 @@ from config import (
     SILENCE_SECONDS,
     WHISPER_SAMPLE_RATE,
 )
-
-
-def _pick_input_device() -> tuple[int | None, int]:
-    """Return (device index, sample rate). Prefer the Mac built-in microphone."""
-    devices = sd.query_devices()
-    default_in = sd.default.device[0]
-
-    if INPUT_DEVICE:
-        needle = INPUT_DEVICE.lower()
-        for idx, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0 and needle in dev["name"].lower():
-                rate = int(dev["default_samplerate"])
-                return idx, rate
-
-    preferred_names = ("macbook", "built-in", "internal")
-    for idx, dev in enumerate(devices):
-        name = dev["name"].lower()
-        if dev["max_input_channels"] > 0 and any(token in name for token in preferred_names):
-            rate = int(dev["default_samplerate"])
-            return idx, rate
-
-    if default_in is not None and default_in >= 0:
-        dev = devices[default_in]
-        return default_in, int(dev["default_samplerate"])
-
-    return None, 48_000
 
 
 def _resample_for_whisper(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -66,8 +40,10 @@ class AudioListener:
         on_level: Callable[[float], None] | None = None,
         on_speech_start: Callable[[], None] | None = None,
         on_progress: Callable[[np.ndarray], None] | None = None,
+        prefer_bluetooth: bool = False,
     ) -> None:
         self.on_utterance = on_utterance
+        self.prefer_bluetooth = prefer_bluetooth
         self.on_status = on_status or (lambda _msg: None)
         self.on_level = on_level or (lambda _level: None)
         self.on_speech_start = on_speech_start or (lambda: None)
@@ -80,6 +56,7 @@ class AudioListener:
         self._utterance_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=4)
         self._capture_rate = 48_000
         self._device_index: int | None = None
+        self._device_choice: InputDeviceChoice | None = None
         self._speech_threshold = MIN_RMS_THRESHOLD
 
     def start(self) -> None:
@@ -115,15 +92,13 @@ class AudioListener:
                 pass
 
     def _run(self) -> None:
-        self._device_index, self._capture_rate = _pick_input_device()
+        self._device_choice = pick_input_device(prefer_bluetooth=self.prefer_bluetooth)
+        self._device_index = self._device_choice.index
+        self._capture_rate = self._device_choice.sample_rate
         chunk_size = max(256, int(self._capture_rate * CHUNK_SECONDS))
         chunk_seconds = chunk_size / self._capture_rate
 
-        device_name = "default"
-        if self._device_index is not None:
-            device_name = sd.query_devices(self._device_index)["name"]
-
-        self.on_status(f"Mic: {device_name} @ {self._capture_rate} Hz")
+        self.on_status(f"Mic: {describe_input_choice(self._device_choice)}")
 
         buffer: list[np.ndarray] = []
         speech_started = False
